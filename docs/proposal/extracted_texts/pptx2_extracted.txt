@@ -1,0 +1,288 @@
+﻿--- Slide slide1.xml ---
+Agent Scheduling：LLM 智能体系统的控制层
+决定什么运行、何时运行、以何种拓扑运行，以及携带什么记忆状态
+核心判断：Agent 系统本质上是一个对模型调用进行调度的决策系统。
+2024–2026 的主线正汇聚为：可验证奖励驱动的策略、记忆与拓扑联合优化。
+基于 agent_scheduling_survey.md · 2026-07-20
+
+--- Slide slide10.xml ---
+主动记忆管理：编辑、压缩与折叠都成为动作
+难点是动作会改变后续训练上下文，造成轨迹断裂与非平稳性
+Agent Scheduling · 控制层研究综述
+08
+MemAct / DCPO
+原位 delete / insert
+分段轨迹与优势估计修复 context fracture
+报告在同等精度下减少 51% 上下文
+可匹配大 16× 的模型
+ACON
+以自然语言优化压缩准则
+失败驱动的对比反馈，无需梯度
+压缩器可蒸馏到小模型
+报告峰值 token 降低 26–54%
+Context-Folding
+branch() 展开子任务
+return() 将过程折叠成结果摘要
+32K 活动预算对比 ReAct 327K
+需要稠密过程奖励稳定训练
+
+--- Slide slide11.xml ---
+调用图演进：拓扑从固定模板变成输入条件化决策
+固定星型广播逐步让位于动态分区、选择性执行与语义协作图
+Agent Scheduling · 控制层研究综述
+09
+2024
+LONGAGENT
+2024
+Chain-of-Agents
+2025
+XpandA
+2025
+Tree of Agents
+2025
+Graph of Agents
+固定协作
+广播或顺序链：简单、可复现，但常执行无关节点。
+动态证据
+XpandA：问题引导分区、共享记忆、选择性回放。
+动态拓扑
+树与图按阅读顺序或语义关系组织协作。
+
+--- Slide slide12.xml ---
+系统级调度器：规划与执行开始解耦
+工程系统关注依赖、并行、容量、重试、可观察性与成本
+Agent Scheduling · 控制层研究综述
+10
+DynTaskMAS
+动态任务图
+−21–33% 执行时间
+异步并行 + 自适应工作流 + 语义上下文
+Gradientsys
+Typed MCP + ReAct
+更低延迟/成本
+一对多派发、同步/异步、容量、重试重规划
+LLMOrch
+函数关系图
+计算密集函数约 2×
+数据 def-use + 控制互斥；规划/执行分离
+
+--- Slide slide13.xml ---
+工作流优化有两条路线：设计时搜索 vs. 运行时调度
+一个生成可复用蓝图；一个为当前输入即时选择结构与资源
+Agent Scheduling · 控制层研究综述
+11
+设计时：先搜索，再部署
+GPTSwarm：图节点与连接共同优化
+ADAS：Meta Agent 以代码改进 Agent 系统
+AFlow：MCTS + 执行反馈搜索工作流
+优势：稳定复用、便于离线评估
+局限：难适配输入难度与运行时状态
+运行时：每个问题都可不同
+DyLAN：选择 Agent 团队
+G-Designer：生成任务感知拓扑
+MaAS：按难度分配调用、工具和 token
+AgentConductor：生成分层 DAG
+优势：质量—成本可按输入动态权衡
+
+--- Slide slide14.xml ---
+怎么评估调度器：不能只比较最终准确率
+真正的问题是：何时多 Agent 有价值，何时只是增加调用与通信
+Agent Scheduling · 控制层研究综述
+12
+MultiAgentBench / MARBLE
+比较 star / chain / tree / mesh
+图结构总体更优
+群体讨论协议表现最差
+Agent 数量超过拐点后 KPI 下降
+MAFBench
+隔离框架层与模型能力
+覆盖编排、记忆、规划、专长、协调
+包含成本感知的后端路由
+避免把模型强弱误判为调度收益
+MASBENCH
+五轴：Depth / Horizon / Breadth
+Parallel / Robustness
+结论：MAS 收益依赖任务结构、验证能力
+多 Agent 并非普适优于单 Agent
+最低指标集：正确率 · grounding · token · 调用数 · 延迟 · 峰值内存 · 失败恢复 · 拓扑稀疏度。
+
+--- Slide slide15.xml ---
+跨层收敛：更少，往往更好
+策略、记忆与拓扑都在从“堆资源”转向“选择最小充分执行集”
+Agent Scheduling · 控制层研究综述
+13
+少调用
+更审慎的工具使用
+优于高频试探
+少记忆
+固定或折叠状态
+优于无限历史
+少节点
+小团队与稀疏图
+常优于全员广播
+少冗余
+只回放冲突证据
+只验证高风险主张
+结论：调度器的价值不是“调用更多能力”，而是以最小代价形成足够、可核验的证据链。
+
+--- Slide slide17.xml ---
+研究机会：预算感知的证据调度器
+用同一策略联合选择 Agent、证据、工具、拓扑、操作与停止时机
+Agent Scheduling · 控制层研究综述
+14
+状态 sₜ
+策略 π
+行动 aₜ
+执行轨迹
+可验证奖励
+状态与动作
+sₜ = (q, Mₜ, Eₜ, Uₜ, Bₜ)
+aₜ = (Agent 集, chunk/tool 集, 图 Gₜ, 操作 rₜ, stop)
+其中 Uₜ 表示未解决冲突，Bₜ 表示剩余预算
+联合优化目标
+最大化：答案质量 + grounding + 证据覆盖
+最小化：token + 延迟 + 幻觉风险
+关键训练难题：跨层、长轨迹、低方差信用分配
+可组合模块：XpandA 分区 + GoA 拓扑 + MaAS 资源 + LONGAGENT 冲突 + DocAgent 验证。
+
+--- Slide slide18.xml ---
+建议阅读路线与结论边界
+先建立调度框架，再分别深入策略、记忆、拓扑与评测
+Agent Scheduling · 控制层研究综述
+15
+策略 / RL
+DeepSeek-R1 / GRPO
+ARTIST → ARPO
+Demystifying Agentic RL
+Credit Assignment Survey
+重点：奖励与归因
+记忆
+MemAgent → MEM1
+MemAct / DCPO
+Context-Folding
+ACON → MemOS
+重点：有界状态与可逆编辑
+拓扑 / 编排
+LONGAGENT → XpandA → GoA
+GPTSwarm / ADAS / AFlow
+G-Designer → MaAS
+Graph-GRPO / AgentConductor
+重点：输入条件化执行图
+引用边界：2601–2606 多为 2026 H1 预印本；正式论文引用前应复核版本、编号与最终发表状态。
+
+--- Slide slide2.xml ---
+一张图看懂：三个控制杠杆，一个学习器
+调度不是单一模块，而是贯穿 Agent 全轨迹的控制问题
+Agent Scheduling · 控制层研究综述
+02
+策略 / Policy
+选什么动作、工具或模型调用
+优化决策质量与调用时机
+记忆 / Memory
+保留、压缩、删除或回放什么状态
+控制上下文增长与证据可达性
+拓扑 / Graph
+激活哪些 Agent、如何连接、何时停止
+控制并行度、通信与执行顺序
+RL 正在成为共同优化器：用可验证结果反向学习工具调用、记忆编辑与通信图。
+
+--- Slide slide3.xml ---
+统一控制循环：从一次回答变成长期 POMDP
+状态不可完全观察、动作跨越多个系统层、奖励延迟到轨迹末端
+Agent Scheduling · 控制层研究综述
+03
+观察：任务/环境
+状态：记忆/证据/预算
+调度策略 π
+动作：调用/编辑/连边
+反馈：结果/成本
+从 Reasoning RL
+约 500-token 推理轨迹
+以最终答案正确性为奖励
+GRPO 等组相对更新
+到 Agentic RL
+多轮环境交互
+100K–1M-token 轨迹
+工具与环境改变后续状态
+核心瓶颈
+终局奖励过于稀疏
+早期动作难以归因
+成本与正确性必须联合优化
+
+--- Slide slide4.xml ---
+策略优化：让 Agent 学会何时、如何、调用什么
+主流范式是结果可验证的端到端轨迹优化
+Agent Scheduling · 控制层研究综述
+04
+ARTIST
+Agent 推理 + 工具使用 + GRPO
+屏蔽工具输出 token 的训练损失
+模型学习调用决策，而非复述工具结果
+代表结果：数学任务约 +22% 绝对提升
+ARPO
+工具调用后熵升高时自适应分支
+只在高不确定位置增加探索
+沿分支共享优势归因
+报告以约一半工具预算优于轨迹级 RL
+反复出现的实践结论
+真实端到端轨迹优于拼接式 SFT
+维持探索熵，避免策略过早坍缩
+更少但更审慎的工具调用往往更好
+奖励必须同时包含质量与成本
+
+--- Slide slide6.xml ---
+信用分配：长轨迹 Agent RL 的第一难题
+最终成功不代表每一步都正确；最终失败也不代表所有步骤都无价值
+Agent Scheduling · 控制层研究综述
+05
+规划
+工具调用
+记忆编辑
+拓扑变化
+验证
+答案
+粒度正在变细
+episode → turn → action / edge
+方法正在变化
+分段优势、回溯式与反事实归因
+评价必须加成本
+正确性、token、延迟与风险共同计分
+
+--- Slide slide8.xml ---
+记忆调度：从无限堆积转向有界、可学习的状态
+统一抽象是 write → manage → read，而不是简单扩大上下文窗口
+Agent Scheduling · 控制层研究综述
+06
+写入
+筛选/压缩
+组织/版本化
+检索/回放
+更新策略
+A · 固定长度状态
+chunk-and-overwrite
+始终维持常数级活动记忆
+代表：MemAgent / MEM1
+B · 记忆编辑动作
+删除、插入、压缩均作为策略动作
+代表：MemAct / ACON
+C · 分支与折叠
+子任务独立展开后折叠成摘要
+代表：Context-Folding / FoldAct
+
+--- Slide slide9.xml ---
+固定记忆：长上下文的目标不再是“装下全部”
+核心是保持足够的决策状态，同时让活动窗口不随轨迹线性增长
+Agent Scheduling · 控制层研究综述
+07
+MemAgent
+• 以 chunk 流式读取，反复覆盖固定记忆槽
+• 计算复杂度保持 O(N)，活动窗口不增长
+• 8K 模型 + 1K 记忆处理 4M token
+• 报告相对损失低于 5%
+MEM1
+• 每轮将历史合并为共享内部状态
+• 端到端 RL 学习保留与丢弃
+• 7B 模型报告 3.5× 性能、3.7× 少内存
+• 可外推到训练长度之外
+设计含义：记忆不是聊天记录，而是调度器为后续行动维护的最小充分状态。
+

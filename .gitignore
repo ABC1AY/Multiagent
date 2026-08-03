@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# PyCharm / VSCode
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Model checkpoints and large files
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.gguf
+models/
+
+# Data and experiment outputs (keep structure, ignore large files)
+data/raw/*
+data/processed/*
+experiments/logs/*
+experiments/checkpoints/*
+experiments/results/*.png
+experiments/results/*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+
