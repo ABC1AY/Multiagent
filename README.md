@@ -172,7 +172,7 @@ SwarmAgent/
  
  - [x] Phase 0：环境配置与模型下载
  - [x] Phase 1：简化版 LONGAGENT 基线
- - [ ] Phase 2：硬编码调度优化
+ - [x] Phase 2：硬编码调度优化
  - [ ] Phase 3：可学习覆盖充分性估计
  - [ ] Phase 4：GRPO 训练
  - [ ] Phase 5：公开基准与真实文档评估
@@ -185,7 +185,24 @@ SwarmAgent/
  | Single-Model Full Context | 70.0% | 6,769 | - | 1001s |
  | Single-Model Truncated | 45.0% | 2,061 | - | 62s |
  
- **观察**：
+ 
+## Phase 2 初步结果（20 条样本，Qwen2.5-3B-Instruct）
+
+| 方法 | 准确率 | 平均 Token 数 | 平均 Worker 调用 | 耗时 |
+|------|--------|--------------|-----------------|------|
+| broadcast（Phase 1 全广播） | 75.0% | 7,905.5 | 15.1 | 102.9s |
+| selective（BM25 top-5） | 75.0% | 2,486.1 | 4.7 | 38.4s |
+| selective + conflict | 75.0% | 2,486.1 | 4.7 | 37.7s |
+| selective + conflict + fallback | 75.0% | 3,350.4 | 6.3 | 47.9s |
+
+**观察**：
+- 仅 BM25 召回 top-5 即可将 Worker 调用从 15.1 次降到 4.7 次（下降约 69%），Token 消耗从约 7,900 降到约 2,500（下降约 68%），准确率保持 75.0%。
+- needle-in-haystack 任务中通常只有一个 chunk 包含答案，其余 chunk 返回“未提及”，因此 `selective + conflict` 没有触发冲突消解，指标与 `selective` 相同。
+- `selective + conflict + fallback` 在部分样本上因置信度不足回退到全广播，调用次数和 Token 有所增加，但仍低于原始广播基线。
+
+结果文件：`experiments/results/phase2_baseline.json`
+
+**观察**：
  - Multi-Agent 在准确率上略高于单模型全文基线，但速度快了约 10 倍。
  - Multi-Agent 显著优于截断基线（+30% 准确率），说明分块协作能有效找回分散证据。
  - 单模型全文基线在长文档上非常慢，且部分长样本会触发 CUDA OOM（已用占位答案处理）。
