@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -41,7 +41,7 @@ env/
 *.ckpt
 *.h5
 *.gguf
-models/
+/models/
 
 # Data and experiment outputs (keep structure, ignore large files)
 data/raw/*
