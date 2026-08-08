@@ -20,9 +20,9 @@ sys.path.insert(0, str(project_root))
 
 from src.agents.leader import Leader
 from src.agents.worker import Worker
-from src.config import DATA_PROCESSED_DIR, RESULTS_DIR
+from src.config import DATA_PROCESSED_DIR, RESULTS_DIR, TRIVIAQA_PROCESSED_PATH
 from src.data_generation.chunking import chunk_document, count_tokens
-from src.data_generation.needle_in_haystack import generate_dataset
+from src.data_generation.triviaqa_loader import ensure_triviaqa_dataset
 from src.evaluation.metrics import compute_metrics, print_metrics
 from src.models.model_loader import load_model_and_tokenizer
 
@@ -33,18 +33,12 @@ MAX_NEW_TOKENS = 64
 TOP_K = 5
 CONFIDENCE_THRESHOLD = 1.0
 RANDOM_SEED = 42
+USE_SAMPLE = False  # Set to True to use 5-sample test dataset (when network is unavailable)
 
 
 def ensure_dataset(path: Path, num_samples: int) -> list[dict]:
     """如果数据集不存在则生成。"""
-    if path.exists():
-        samples = []
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                samples.append(json.loads(line))
-        print(f"Loaded {len(samples)} samples from {path}")
-        return samples
-    return generate_dataset(num_samples=num_samples, output_path=path)
+    return ensure_triviaqa_dataset(output_path=path, use_sample=USE_SAMPLE)
 
 
 def _count_tokens_in_result(
@@ -143,7 +137,7 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
-    dataset_path = DATA_PROCESSED_DIR / "needle_in_haystack.jsonl"
+    dataset_path = TRIVIAQA_PROCESSED_PATH
     samples = ensure_dataset(dataset_path, NUM_SAMPLES)
     samples = samples[:NUM_SAMPLES]
 

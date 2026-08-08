@@ -41,7 +41,7 @@ env/
 *.ckpt
 *.h5
 *.gguf
-models/
+/models/
 
 # Data and experiment outputs (keep structure, ignore large files)
 data/raw/*
@@ -59,4 +59,7 @@ Thumbs.db
 *.tmp
 *.bak
 *.log
+
+# Environment variables
+.env
 
