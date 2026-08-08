@@ -60,3 +60,7 @@ Thumbs.db
 *.bak
 *.log
 
+
+# Experiment result json (regenerated, noisy timings)
+experiments/results/*.json
+

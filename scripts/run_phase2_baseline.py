@@ -143,7 +143,7 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
-    dataset_path = DATA_PROCESSED_DIR / "needle_in_haystack.jsonl"
+    dataset_path = DATA_PROCESSED_DIR / "combined_dev.jsonl"
     samples = ensure_dataset(dataset_path, NUM_SAMPLES)
     samples = samples[:NUM_SAMPLES]
 
