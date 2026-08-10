@@ -283,9 +283,10 @@ class Leader:
     ) -> list[dict[str, str]]:
         """构建多轮调度 Agent 的 prompt。"""
         system_prompt = (
-            "你是一个调度智能体，负责决定如何调用文档阅读者来回答问题。\n"
-            "每次只能执行一个动作。优先选择能消除不确定性、解决冲突的动作。\n"
-            "如果证据足够且一致，就回答；如果证据不足或有冲突，就继续查询或验证。"
+            "You are a scheduling agent. Your job is to decide the next action to answer a question using document readers (Workers).\n"
+            "You start with some evidence from BM25 retrieval. In each round, choose exactly ONE action.\n"
+            "Prefer ANSWER as soon as the evidence is sufficient and consistent. Only QUERY or VERIFY when evidence is insufficient or conflicting.\n"
+            "Do not query a Worker that has already been queried unless you are performing VERIFY."
         )
 
         evidence_lines = []
@@ -302,28 +303,33 @@ class Leader:
         not_queried = [i for i in range(len(chunks)) if i not in queried_wids]
 
         user_prompt = (
-            f"问题：{question}\n\n"
-            f"共有 {len(chunks)} 个文档片段（Worker 0 ~ {len(chunks)-1}）。\n"
-            f"当前已收集证据：\n{evidence_text}\n\n"
-            f"当前置信度：{confidence:.2f}\n"
-            f"是否存在冲突：{'是' if has_conflict else '否'}\n"
-            f"已查询过的 Worker：{queried_wids if queried_wids else '无'}\n"
-            f"尚未查询的 Worker：{not_queried}\n"
-            f"剩余 Worker 调用预算：{budget_left}\n"
-            f"当前轮次：{round_num}/{max_rounds}\n\n"
-            "可用动作：\n"
-            "  QUERY[i]    : 询问第 i 个 Worker（例如 QUERY[3]）\n"
-            "  QUERY_ALL   : 广播询问所有 Worker\n"
-            "  VERIFY      : 让冲突 Worker 互换 chunk 重读并加入仲裁\n"
-            "  ANSWER      : 综合当前证据给出最终答案并停止\n"
-            "  STOP        : 停止调度\n\n"
-            "规则：\n"
-            "- 不要重复查询已经查过的 Worker，除非是为了 VERIFY。\n"
-            "- 如果证据足够回答，直接输出 <action>ANSWER</action>。\n"
-            "- 思考过程请简短，不超过两句话。\n\n"
-            "请按以下格式输出：\n"
-            "<thought>你的思考过程</thought>\n"
-            "<action>QUERY[3]</action>"
+            f"Question: {question}\n\n"
+            f"There are {len(chunks)} document chunks (Worker 0 ~ {len(chunks)-1}).\n"
+            f"Current evidence:\n{evidence_text}\n\n"
+            f"Current confidence: {confidence:.2f}\n"
+            f"Conflict: {'yes' if has_conflict else 'no'}\n"
+            f"Already queried Workers: {queried_wids if queried_wids else 'none'}\n"
+            f"Not yet queried Workers: {not_queried}\n"
+            f"Remaining Worker-call budget: {budget_left}\n"
+            f"Round: {round_num}/{max_rounds}\n\n"
+            "Available actions:\n"
+            "  QUERY[i]  : ask Worker i (e.g., QUERY[3])\n"
+            "  QUERY_ALL : broadcast to all Workers\n"
+            "  VERIFY    : let conflicting Workers re-read swapped chunks and add an arbitrator\n"
+            "  ANSWER    : synthesize the final answer from current evidence and stop\n"
+            "  STOP      : stop scheduling\n\n"
+            "Rules:\n"
+            "- If at least one Worker already returned a concrete answer and there is NO conflict, output <action>ANSWER</action>.\n"
+            "- Do NOT query a Worker that has already been queried.\n"
+            "- Keep your thought short (one sentence). The action tag must appear at the end.\n\n"
+            "Examples:\n"
+            "<thought>Worker 3 returned a concrete answer and no other Worker contradicts it.</thought>\n"
+            "<action>ANSWER</action>\n\n"
+            "<thought>The queried Workers disagree, so I should verify before answering.</thought>\n"
+            "<action>VERIFY</action>\n\n"
+            "Now decide:\n"
+            "<thought>...</thought>\n"
+            "<action>...</action>"
         )
         return [
             {"role": "system", "content": system_prompt},
@@ -432,7 +438,7 @@ class Leader:
                 self.model,
                 self.tokenizer,
                 messages,
-                max_new_tokens=256,
+                max_new_tokens=128,
                 do_sample=False,
             ).strip()
 

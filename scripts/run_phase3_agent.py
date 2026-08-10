@@ -24,7 +24,7 @@ from src.data_generation.triviaqa_loader import ensure_triviaqa_dataset
 from src.evaluation.metrics import compute_metrics, print_metrics
 from src.models.model_loader import load_model_and_tokenizer
 
-NUM_SAMPLES = 5
+NUM_SAMPLES = 20
 CHUNK_SIZE = 512
 CHUNK_OVERLAP = 50
 MAX_NEW_TOKENS = 64
