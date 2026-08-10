@@ -32,3 +32,7 @@ DEFAULT_TEMPERATURE = 0.7
 DEFAULT_CHUNK_SIZE = 512
 DEFAULT_CHUNK_OVERLAP = 50
 
+# TriviaQA RC 数据集路径（Wikipedia context，validation split）
+TRIVIAQA_PROCESSED_PATH = DATA_PROCESSED_DIR / "triviaqa_rc.jsonl"
+TRIVIAQA_SAMPLE_PATH = DATA_PROCESSED_DIR / "triviaqa_sample.jsonl"
+

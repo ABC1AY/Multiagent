@@ -60,6 +60,8 @@ Thumbs.db
 *.bak
 *.log
 
+# Environment variables
+.env
 
 # Experiment result json (regenerated, noisy timings)
 experiments/results/*.json
