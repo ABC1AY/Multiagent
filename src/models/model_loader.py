@@ -111,3 +111,80 @@ def apply_chat_and_generate(
     new_tokens = outputs[0][input_length:]
     response = tokenizer.decode(new_tokens, skip_special_tokens=True)
     return response
+
+
+def generate_with_logprobs(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
+    messages: list[dict[str, str]],
+    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    do_sample: bool = True,
+    temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float = 0.9,
+    add_generation_prompt: bool = True,
+) -> tuple[str, list[int], list[float]]:
+    """生成文本并返回 (解码文本, token_ids, 逐token对数概率)。
+
+    与 ``apply_chat_and_generate()`` 不同，本函数：
+
+    1. **不** 使用 ``torch.no_grad()``，允许梯度回传用于训练。
+    2. 通过 ``output_scores=True`` 获取每个生成 token 的 logits。
+    3. 使用 ``torch.log_softmax`` 计算对数概率。
+    4. 除了解码文本外，还返回 token ID 及其对数概率列表。
+
+    Args:
+        model: 因果语言模型。
+        tokenizer: 对应的 tokenizer。
+        messages: 符合 chat template 的消息列表。
+        max_new_tokens: 最多生成的新 token 数。
+        do_sample: 是否使用采样。若为 False，则使用贪心解码。
+        temperature: 采样温度，仅在 ``do_sample=True`` 时生效。
+        top_p: nucleus 采样的概率阈值，仅在 ``do_sample=True`` 时生效。
+        add_generation_prompt: 是否在模板末尾追加生成提示符。
+
+    Returns:
+        ``(decoded_text, token_ids, log_probs)`` 元组，其中 ``token_ids``
+        和 ``log_probs`` 均为列表，长度等于生成的 token 数。
+    """
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=add_generation_prompt,
+    )
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    input_length = inputs.input_ids.shape[-1]
+
+    generate_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": do_sample,
+        "output_scores": True,
+        "return_dict_in_generate": True,
+    }
+    if do_sample:
+        generate_kwargs["temperature"] = temperature
+        generate_kwargs["top_p"] = top_p
+
+    outputs = model.generate(**inputs, **generate_kwargs)
+
+    # 提取生成的 token（排除 prompt 部分）
+    sequences = outputs.sequences
+    new_tokens = sequences[0][input_length:]
+
+    # scores 是一个 tuple，每个元素对应一个生成步骤的 logits
+    scores = outputs.scores
+
+    # 计算实际生成的每个 token 的对数概率
+    log_probs: list[float] = []
+    for i, token_id in enumerate(new_tokens):
+        logits = scores[i]  # shape: (1, vocab_size) or (vocab_size,)
+        # 如果有 batch 维度，取第一个
+        if logits.dim() == 2:
+            logits = logits[0]
+        log_probs_tensor = torch.log_softmax(logits, dim=-1)
+        log_prob = log_probs_tensor[token_id].item()
+        log_probs.append(log_prob)
+
+    token_ids = new_tokens.tolist()
+    decoded_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+    return decoded_text, token_ids, log_probs
