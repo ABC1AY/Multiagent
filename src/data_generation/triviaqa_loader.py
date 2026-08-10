@@ -42,12 +42,12 @@ def _build_document(entity_pages: dict) -> str:
 
 
 def load_triviaqa_rc(split: str = "validation"):
-    """Load TriviaQA RC from HuggingFace using the token in .env.
+    """Load TriviaQA RC validation split directly from Parquet files.
 
-    ``override=True`` ensures the project ``.env`` wins over any HF_*
-    variables already present in the shell environment, so the China
-    mirror (``HF_ENDPOINT``) and token configured in ``.env`` are always
-    the ones actually used.
+    The official ``load_dataset("mandarjoshi/trivia_qa", "rc")`` route
+    relies on a deprecated loading script that often hangs behind the
+    Great Firewall. We instead download the 4 published validation
+    Parquet shards and load them with the native Parquet builder.
     """
     load_dotenv(project_root / ".env", override=True)
 
@@ -57,12 +57,30 @@ def load_triviaqa_rc(split: str = "validation"):
             "HF_TOKEN not set. Add it to the project .env file: "
             "HF_TOKEN=hf_..."
         )
-    ds = load_dataset(
-        "mandarjoshi/trivia_qa",
-        "rc",
-        split=split,
-        token=token,
-    )
+
+    if split != "validation":
+        raise ValueError("Only the validation split is supported in this loader.")
+
+    from huggingface_hub import hf_hub_download
+
+    repo_id = "mandarjoshi/trivia_qa"
+    num_shards = 4
+    filenames = [
+        f"rc/validation-{i:05d}-of-{num_shards:05d}.parquet"
+        for i in range(num_shards)
+    ]
+
+    local_paths = []
+    for filename in filenames:
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            repo_type="dataset",
+            token=token,
+        )
+        local_paths.append(local_path)
+
+    ds = load_dataset("parquet", data_files=local_paths, split="train")
     return ds
 
 
