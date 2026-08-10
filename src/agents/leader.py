@@ -272,3 +272,200 @@ class Leader:
             "worker_calls": worker_calls,
             "rounds": round_history,
         }
+    def _build_agent_prompt(
+        self,
+        question: str,
+        chunks: list[str],
+        responses: list[tuple[int, str]],
+        budget_left: int,
+        round_num: int,
+        max_rounds: int,
+    ) -> list[dict[str, str]]:
+        """构建多轮调度 Agent 的 prompt。"""
+        system_prompt = (
+            "你是一个调度智能体，负责决定如何调用文档阅读者来回答问题。\n"
+            "每次只能执行一个动作。优先选择能消除不确定性、解决冲突的动作。\n"
+            "如果证据足够且一致，就回答；如果证据不足或有冲突，就继续查询或验证。"
+        )
+
+        evidence_lines = []
+        for wid, resp in responses:
+            evidence_lines.append(f"  Worker {wid}: {resp}")
+        if not evidence_lines:
+            evidence_lines.append("  暂无")
+        evidence_text = "\n".join(evidence_lines)
+
+        confidence = self._compute_confidence(responses)
+        has_conflict = self._detect_conflict(responses)
+
+        queried_wids = sorted(set(wid for wid, _ in responses))
+        not_queried = [i for i in range(len(chunks)) if i not in queried_wids]
+
+        user_prompt = (
+            f"问题：{question}\n\n"
+            f"共有 {len(chunks)} 个文档片段（Worker 0 ~ {len(chunks)-1}）。\n"
+            f"当前已收集证据：\n{evidence_text}\n\n"
+            f"当前置信度：{confidence:.2f}\n"
+            f"是否存在冲突：{'是' if has_conflict else '否'}\n"
+            f"已查询过的 Worker：{queried_wids if queried_wids else '无'}\n"
+            f"尚未查询的 Worker：{not_queried}\n"
+            f"剩余 Worker 调用预算：{budget_left}\n"
+            f"当前轮次：{round_num}/{max_rounds}\n\n"
+            "可用动作：\n"
+            "  QUERY[i]    : 询问第 i 个 Worker（例如 QUERY[3]）\n"
+            "  QUERY_ALL   : 广播询问所有 Worker\n"
+            "  VERIFY      : 让冲突 Worker 互换 chunk 重读并加入仲裁\n"
+            "  ANSWER      : 综合当前证据给出最终答案并停止\n"
+            "  STOP        : 停止调度\n\n"
+            "规则：\n"
+            "- 不要重复查询已经查过的 Worker，除非是为了 VERIFY。\n"
+            "- 如果证据足够回答，直接输出 <action>ANSWER</action>。\n"
+            "- 思考过程请简短，不超过两句话。\n\n"
+            "请按以下格式输出：\n"
+            "<thought>你的思考过程</thought>\n"
+            "<action>QUERY[3]</action>"
+        )
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _parse_agent_action(self, text: str) -> tuple[str, int | None]:
+        """从模型输出中解析动作。"""
+        text = text.strip()
+        match = re.search(r"<action>\s*([A-Z_]+)(?:\[(\d+)\])?\s*</action>", text)
+        if not match:
+            match = re.search(r"\b(QUERY|QUERY_ALL|VERIFY|ANSWER|STOP)\b(?:\[(\d+)\])?", text)
+            if not match:
+                return "ANSWER", None
+        action = match.group(1)
+        idx = int(match.group(2)) if match.group(2) is not None else None
+        return action, idx
+
+    def _execute_agent_action(
+        self,
+        action: str,
+        idx: int | None,
+        question: str,
+        chunks: list[str],
+        workers: list,
+        responses: list[tuple[int, str]],
+    ) -> tuple[list[tuple[int, str]], int, str]:
+        """执行 Agent 动作，返回更新后的 responses、消耗的调用数、动作描述。"""
+        calls = 0
+        description = action
+
+        if action == "QUERY" and idx is not None and 0 <= idx < len(workers):
+            resp = workers[idx].answer(question, chunks[idx])
+            responses.append((idx, resp))
+            calls = 1
+            description = f"QUERY[{idx}]"
+        elif action == "QUERY_ALL":
+            for chunk, worker in zip(chunks, workers):
+                resp = worker.answer(question, chunk)
+                responses.append((worker.worker_id, resp))
+            calls = len(workers)
+            description = "QUERY_ALL"
+        elif action == "VERIFY":
+            if self._detect_conflict(responses):
+                responses = self._resolve_conflict(question, responses, chunks, workers)
+                calls = 3
+                description = "VERIFY"
+            else:
+                description = "VERIFY(no_conflict)"
+        elif action in ("ANSWER", "STOP"):
+            description = action
+        else:
+            description = "ANSWER(fallback)"
+
+        return responses, calls, description
+
+    def run_agent_loop(
+        self,
+        question: str,
+        chunks: list[str],
+        workers: list,
+        seed_top_k: int = 5,
+        max_rounds: int = 4,
+        budget: int = 10,
+    ) -> dict:
+        """Phase 3：模型自己决定调度动作的多轮 loop。
+
+        流程：
+        1. 先用 BM25 召回 seed_top_k，给 Agent 初始证据；
+        2. Agent 每轮根据当前状态选择一个动作；
+        3. 执行动作，更新状态；
+        4. 遇到 ANSWER/STOP 或预算耗尽时停止。
+        """
+        assert len(chunks) == len(workers), "chunks 与 workers 数量必须一致"
+
+        responses: list[tuple[int, str]] = []
+        round_history = []
+        worker_calls = 0
+        budget_left = budget
+
+        seed_k = min(seed_top_k, len(chunks), budget_left)
+        if seed_k > 0:
+            seed_responses = self._selective_query(question, chunks, workers, seed_k)
+            responses.extend(seed_responses)
+            worker_calls += seed_k
+            budget_left -= seed_k
+            round_history.append({
+                "round": 0,
+                "type": "seed_selective_query",
+                "question": question,
+                "responses": list(seed_responses),
+            })
+
+        final_answer = None
+        stop_reason = ""
+
+        for round_num in range(1, max_rounds + 1):
+            if budget_left <= 0:
+                stop_reason = "budget_exhausted"
+                break
+
+            messages = self._build_agent_prompt(
+                question, chunks, responses, budget_left, round_num, max_rounds
+            )
+            raw_output = apply_chat_and_generate(
+                self.model,
+                self.tokenizer,
+                messages,
+                max_new_tokens=256,
+                do_sample=False,
+            ).strip()
+
+            action, idx = self._parse_agent_action(raw_output)
+            responses, calls, description = self._execute_agent_action(
+                action, idx, question, chunks, workers, responses
+            )
+            worker_calls += calls
+            budget_left -= calls
+
+            round_history.append({
+                "round": round_num,
+                "type": "agent_action",
+                "raw_output": raw_output,
+                "action": description,
+                "responses": list(responses),
+                "budget_left": budget_left,
+            })
+
+            if action in ("ANSWER", "STOP") or description.startswith("ANSWER"):
+                stop_reason = "agent_ANSWER" if description.startswith("ANSWER") else f"agent_{action}"
+                break
+
+        if final_answer is None:
+            final_answer = self.answer(question, responses)
+            if not stop_reason:
+                stop_reason = "max_rounds"
+
+        return {
+            "final_answer": final_answer,
+            "worker_responses": responses,
+            "worker_calls": worker_calls,
+            "confidence": self._compute_confidence(responses),
+            "rounds": round_history,
+            "stop_reason": stop_reason,
+        }
