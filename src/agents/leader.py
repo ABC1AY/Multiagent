@@ -153,8 +153,12 @@ class Leader:
             chunk_a, chunk_b = chunks[wid_a], chunks[wid_b]
             resp_a = workers[wid_a].answer(question, chunk_b)
             resp_b = workers[wid_b].answer(question, chunk_a)
-            new_responses[wid_a] = (wid_a, resp_a)
-            new_responses[wid_b] = (wid_b, resp_b)
+            # Replace in-place by position, not by worker_id
+            for i, (wid, _) in enumerate(new_responses):
+                if wid == wid_a:
+                    new_responses[i] = (wid_a, resp_a)
+                elif wid == wid_b:
+                    new_responses[i] = (wid_b, resp_b)
 
         arbitrator_wid = None
         for i, _ in enumerate(workers):
