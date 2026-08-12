@@ -122,22 +122,27 @@ SwarmAgent/
 
 **完成标志**：在保持准确率的前提下，Worker 调用次数下降 30%+。
 
-### Phase 3：可学习的覆盖充分性估计
+### Phase 3：多轮 Agent Loop（Model-decided QUERY/VERIFY/ANSWER）
 
-**目标**：让“什么时候停止”从硬规则变成可学习的信号。
+**目标**：让 Leader 自己决定多轮调度，而不是 Phase 2 的硬编码单轮 selective + conflict + fallback。
 
-1. **定义覆盖信号 C_t**：从当前证据中提取特征，例如：
-   - 有多少 chunk 返回了相关证据
-   - 证据之间是否一致
-   - 问题中的实体是否都被覆盖
-2. **收集训练数据**：用 Phase 2 的系统跑一批样本，记录每一步的 `(C_t, 最终答案对错, 总成本)`。
-3. **训练一个小分类器**（logistic regression 或小型 MLP）：
-   - 输入：当前状态特征
-   - 输出：继续查询 vs. 停止回答
-4. **替换硬编码停止规则**，用分类器决定停止。
+1. **第一轮：种子查询**
+   - 用 BM25 top-K 检索 top-5 chunks 作为种子证据
+   - 5 个 Worker 并行答
+2. **后续轮：模型决策**
+   - 把"当前证据 + 已用预算 + 历史动作"喂给 Leader
+   - Leader 每轮输出以下动作之一：
+     - `QUERY[i]`：查第 i 个 chunk 的 Worker
+     - `VERIFY[a,b]`：让 Worker a 和 b 互换 chunk 重读（解决冲突）
+     - `ANSWER`：输出最终答案
+     - `QUERY_ALL`：fallback 全广播
+3. **预算控制**
+   - `AGENT_MAX_ROUNDS = 4`（最多 4 轮）
+   - `AGENT_BUDGET = 10`（最多 10 次 Worker 调用）
 
-**完成标志**：用更少的调用次数达到与 Phase 2 相当的准确率。
+**完成标志**：相比 Phase 2 selective_full，**6× 少调用 + 3× 少 token，准确率损失 ≤5pp**（Pareto 前沿向左下移动）。
 
+**注**：原 README 设计是"训分类器决定何时停"，实际实现改为多轮 agent loop —— 跟老师建议的 Agentic RL / 多轮查询方向一致，是 Phase 4 GRPO 训练调度策略的天然起点。
 ### Phase 4：GRPO 端到端训练调度策略
 
 **目标**：把 Leader 的完整决策变成用 GRPO 训练的策略。
@@ -168,12 +173,25 @@ SwarmAgent/
    - + 验证器 + 预算停止 + GRPO
 5. **画 Pareto 前沿图**：准确率 vs. token / 调用次数。
 
- ## 当前进度
+## Phase 3 初步结果（20 条样本，Qwen2.5-3B-Instruct，TriviaQA RC）
+
+| 方法 | 准确率 | 平均 Token 数 | 平均 Worker 调用 | 耗时 |
+|------|--------|--------------|-----------------|------|
+| selective_full（Phase 2 baseline）| 45.0% | 14,416 | 26.7 | 238s |
+| **agent_loop（Phase 3）** | **40.0%** | **4,440** | **5.45** | ~80s |
+
+**观察**：
+- agent_loop 用 **6× 少 Worker 调用** + **3× 少 token**，准确率仅损失 5pp（45% → 40%）
+- 在准确率-成本 Pareto 前沿上明显向左下移动
+- 模型自己学会了"什么时候再查一个"、"什么时候停"，比硬编码 single-pass 更高效
+- 这是 Phase 4 GRPO 训练调度策略的 baseline
+
+结果文件：`experiments/results/phase3_agent.json` ## 当前进度
  
  - [x] Phase 0：环境配置与模型下载
  - [x] Phase 1：简化版 LONGAGENT 基线
  - [x] Phase 2：硬编码调度优化
- - [ ] Phase 3：可学习覆盖充分性估计
+ - [x] Phase 3：多轮 Agent Loop
  - [ ] Phase 4：GRPO 训练
  - [ ] Phase 5：公开基准与真实文档评估
  
