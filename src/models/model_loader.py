@@ -18,6 +18,7 @@ def load_model_and_tokenizer(
     device_map: str = "auto",
     dtype: torch.dtype = torch.float16,
     trust_remote_code: bool = True,
+    local_files_only: bool = True,
 ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
     """加载因果语言模型及其 tokenizer。
 
@@ -45,6 +46,7 @@ def load_model_and_tokenizer(
     tokenizer = AutoTokenizer.from_pretrained(
         path,
         trust_remote_code=trust_remote_code,
+        local_files_only=local_files_only,
     )
     # 确保 pad_token 可用（生成批量/单条输入时都可能用到）
     if tokenizer.pad_token is None:
@@ -55,6 +57,7 @@ def load_model_and_tokenizer(
         dtype=dtype,
         device_map=device_map,
         trust_remote_code=trust_remote_code,
+        local_files_only=local_files_only,
     )
 
     _model_cache = (model, tokenizer)
