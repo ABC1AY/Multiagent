@@ -114,3 +114,55 @@ def apply_chat_and_generate(
     new_tokens = outputs[0][input_length:]
     response = tokenizer.decode(new_tokens, skip_special_tokens=True)
     return response
+
+
+def generate_with_logprobs(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
+    messages: list[dict[str, str]],
+    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    do_sample: bool = False,
+    temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float = 0.9,
+    add_generation_prompt: bool = True,
+) -> tuple[str, list[int], list[torch.Tensor]]:
+    """Generate a response and return text, token ids, and per-token log-probs.
+
+    Sampling is done under torch.no_grad(), but the returned log-probs are
+    recomputed with a differentiable forward pass so GRPO can back-propagate.
+    """
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=add_generation_prompt,
+    )
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    input_length = inputs.input_ids.shape[-1]
+
+    generate_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": do_sample,
+        "return_dict_in_generate": True,
+        "output_scores": True,
+    }
+    if do_sample:
+        generate_kwargs["temperature"] = temperature
+        generate_kwargs["top_p"] = top_p
+
+    with torch.no_grad():
+        outputs = model.generate(**inputs, **generate_kwargs)
+
+    generated_ids = outputs.sequences[0][input_length:]
+    token_ids = generated_ids.tolist()
+
+    # Differentiable forward pass over the full generated sequence.
+    full_ids = outputs.sequences[0].unsqueeze(0)
+    logits = model(full_ids).logits[0]  # (seq_len, vocab_size)
+    log_probs: list[torch.Tensor] = []
+    for t, token_id in enumerate(token_ids):
+        token_logit = logits[input_length + t - 1, :]
+        token_log_prob = torch.nn.functional.log_softmax(token_logit, dim=-1)[token_id]
+        log_probs.append(token_log_prob)
+
+    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+    return response, token_ids, log_probs

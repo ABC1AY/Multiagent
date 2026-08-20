@@ -2,7 +2,7 @@
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from src.models.model_loader import apply_chat_and_generate
+from src.models.model_loader import apply_chat_and_generate, generate_with_logprobs
 
 NO_MENTION_MARKER = "未提及"
 
@@ -44,3 +44,27 @@ class Worker:
     def __repr__(self):
         return f"Worker(id={self.worker_id})"
 
+    def answer_with_logprobs(
+        self,
+        question: str,
+        chunk: str,
+        max_new_tokens: int = 64,
+    ) -> tuple[str, list[int], list[torch.Tensor]]:
+        """Answer from a chunk and return (text, token_ids, log_probs)."""
+        system_prompt = (
+            "You are a document reader. You can only see one fragment of the document. "
+            "Answer the question based only on the information in this fragment. "
+            "If the fragment does not contain relevant information, reply exactly '未提及'."
+        )
+        user_prompt = f"Question: {question}\n\nDocument fragment:\n{chunk}\n\nPlease answer directly."
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        return generate_with_logprobs(
+            self.model,
+            self.tokenizer,
+            messages,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+        )

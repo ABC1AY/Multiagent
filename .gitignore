@@ -68,3 +68,8 @@ experiments/results/*.json
 # Environment variables
 .env
 
+
+# LoRA checkpoints (large binary)
+experiments/checkpoints/
+experiments/results/*.json
+

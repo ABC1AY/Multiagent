@@ -3,11 +3,15 @@ import re
 import string
 from collections import Counter
 
+import torch
+
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
 from src.agents.worker import NO_MENTION_MARKER
-from src.models.model_loader import apply_chat_and_generate
+from src.models.model_loader import apply_chat_and_generate, generate_with_logprobs
 from src.retrieval.bm25_retriever import BM25Retriever
+from src.training.rollout import RolloutRecorder
+from src.training.types import LeaderAction
 
 
 class Leader:
@@ -138,6 +142,7 @@ class Leader:
         worker_responses: list[tuple[int, str]],
         chunks: list[str],
         workers: list,
+        recorder: RolloutRecorder | None = None,
     ) -> list[tuple[int, str]]:
         """冲突消解：让冲突的 Worker 互换 chunk 重读，并加入仲裁 Worker。"""
         groups = self._group_mentions(worker_responses)
@@ -151,8 +156,8 @@ class Leader:
         if len(conflict_wids) == 2:
             wid_a, wid_b = conflict_wids
             chunk_a, chunk_b = chunks[wid_a], chunks[wid_b]
-            resp_a = workers[wid_a].answer(question, chunk_b)
-            resp_b = workers[wid_b].answer(question, chunk_a)
+            resp_a, toks_a, lp_a = workers[wid_a].answer_with_logprobs(question, chunk_b)
+            resp_b, toks_b, lp_b = workers[wid_b].answer_with_logprobs(question, chunk_a)
             # Replace in-place by position, not by worker_id
             for i, (wid, _) in enumerate(new_responses):
                 if wid == wid_a:
@@ -160,15 +165,42 @@ class Leader:
                 elif wid == wid_b:
                     new_responses[i] = (wid_b, resp_b)
 
-        arbitrator_wid = None
-        for i, _ in enumerate(workers):
-            if i not in conflict_wids:
-                arbitrator_wid = i
-                break
-        if arbitrator_wid is not None:
-            combined_chunk = chunks[conflict_wids[0]] + "\n\n" + chunks[conflict_wids[1]]
-            arb_resp = workers[arbitrator_wid].answer(question, combined_chunk)
-            new_responses.append((arbitrator_wid, f"[仲裁] {arb_resp}"))
+            arbitrator_wid = None
+            for i, _ in enumerate(workers):
+                if i not in conflict_wids:
+                    arbitrator_wid = i
+                    break
+
+            arb_resp_raw = None
+            arb_toks = None
+            arb_lp = None
+            if arbitrator_wid is not None:
+                combined_chunk = chunk_a + "\n\n" + chunk_b
+                arb_resp_raw, arb_toks, arb_lp = workers[arbitrator_wid].answer_with_logprobs(question, combined_chunk)
+                new_responses.append((arbitrator_wid, f"[仲裁] {arb_resp_raw}"))
+
+            if recorder is not None:
+                state = {
+                    "question": question,
+                    "worker_responses": worker_responses,
+                    "chunks": chunks,
+                    "conflict_wids": conflict_wids,
+                }
+                recorder.record_conflict_resolution(
+                    state=state,
+                    swap_wid_a=wid_a,
+                    swap_wid_b=wid_b,
+                    swap_resp_a=resp_a,
+                    swap_resp_b=resp_b,
+                    swap_resp_a_token_ids=toks_a,
+                    swap_resp_a_log_probs=lp_a,
+                    swap_resp_b_token_ids=toks_b,
+                    swap_resp_b_log_probs=lp_b,
+                    arb_wid=arbitrator_wid,
+                    arb_resp=arb_resp_raw,
+                    arb_resp_token_ids=arb_toks,
+                    arb_resp_log_probs=arb_lp,
+                )
 
         return new_responses
 
@@ -471,6 +503,214 @@ class Leader:
             "final_answer": final_answer,
             "worker_responses": responses,
             "worker_calls": worker_calls,
+            "confidence": self._compute_confidence(responses),
+            "rounds": round_history,
+            "stop_reason": stop_reason,
+        }
+
+    def _sum_action_log_probs(self, action: LeaderAction | None) -> torch.Tensor:
+        """Return the sum of per-token log-probs for a recorded action."""
+        if action is None or not action.log_probs:
+            return torch.tensor(0.0, device=self.model.device)
+        return sum(action.log_probs, torch.tensor(0.0, device=self.model.device))
+
+    def _action_token_count(self, action: LeaderAction | None) -> int:
+        """Return the number of generated tokens for a recorded action."""
+        if action is None or not action.token_ids:
+            return 0
+        return len(action.token_ids)
+
+    def run_agent_loop_with_logprobs(
+        self,
+        question: str,
+        chunks: list[str],
+        workers: list,
+        recorder: RolloutRecorder,
+        seed_top_k: int = 5,
+        max_rounds: int = 4,
+        budget: int = 10,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+    ) -> dict:
+        """Sample a multi-turn scheduling trajectory and accumulate log-probs for GRPO."""
+        assert len(chunks) == len(workers), "chunks and workers must have the same length"
+
+        responses: list[tuple[int, str]] = []
+        round_history = []
+        worker_calls = 0
+        total_token_cost = 0
+        sequence_log_prob = torch.tensor(0.0, device=self.model.device)
+        budget_left = budget
+
+        # Seed evidence with BM25 top-k.
+        seed_k = min(seed_top_k, len(chunks), budget_left)
+        if seed_k > 0:
+            retriever = BM25Retriever(self.tokenizer).fit(chunks)
+            top_results = retriever.retrieve(question, top_k=seed_k)
+            top_indices = [idx for idx, _ in top_results]
+            seed_responses: list[tuple[int, str]] = []
+            for idx in top_indices:
+                resp, token_ids, log_probs = workers[idx].answer_with_logprobs(
+                    question, chunks[idx]
+                )
+                seed_responses.append((idx, resp))
+                worker_calls += 1
+                budget_left -= 1
+                total_token_cost += len(token_ids)
+                sequence_log_prob += sum(
+                    log_probs, torch.tensor(0.0, device=self.model.device)
+                )
+                recorder.record_action(
+                    action_type="QUERY",
+                    worker_id=idx,
+                    chunk_id=idx,
+                    query_text=resp,
+                    token_ids=token_ids,
+                    log_probs=log_probs,
+                )
+            responses.extend(seed_responses)
+            round_history.append({
+                "round": 0,
+                "type": "seed_selective_query",
+                "responses": list(seed_responses),
+            })
+
+        final_answer = None
+        stop_reason = ""
+
+        for round_num in range(1, max_rounds + 1):
+            if budget_left <= 0:
+                stop_reason = "budget_exhausted"
+                break
+
+            messages = self._build_agent_prompt(
+                question, chunks, responses, budget_left, round_num, max_rounds
+            )
+            raw_output, decision_token_ids, decision_log_probs = generate_with_logprobs(
+                self.model,
+                self.tokenizer,
+                messages,
+                max_new_tokens=128,
+                do_sample=True,
+                temperature=temperature,
+                top_p=top_p,
+            )
+            total_token_cost += len(decision_token_ids)
+            sequence_log_prob += sum(
+                decision_log_probs,
+                torch.tensor(0.0, device=self.model.device),
+            )
+            recorder.record_action(
+                action_type="AGENT_DECISION",
+                raw_text=raw_output,
+                token_ids=decision_token_ids,
+                log_probs=decision_log_probs,
+            )
+
+            action, idx = self._parse_agent_action(raw_output)
+            description = action
+
+            if action == "QUERY" and idx is not None and 0 <= idx < len(workers):
+                resp, token_ids, log_probs = workers[idx].answer_with_logprobs(
+                    question, chunks[idx]
+                )
+                responses.append((idx, resp))
+                worker_calls += 1
+                budget_left -= 1
+                total_token_cost += len(token_ids)
+                sequence_log_prob += sum(
+                    log_probs, torch.tensor(0.0, device=self.model.device)
+                )
+                recorder.record_action(
+                    action_type="QUERY",
+                    worker_id=idx,
+                    chunk_id=idx,
+                    query_text=resp,
+                    token_ids=token_ids,
+                    log_probs=log_probs,
+                )
+                description = f"QUERY[{idx}]"
+            elif action == "QUERY_ALL":
+                for chunk, worker in zip(chunks, workers):
+                    resp, token_ids, log_probs = worker.answer_with_logprobs(
+                        question, chunk
+                    )
+                    responses.append((worker.worker_id, resp))
+                    worker_calls += 1
+                    total_token_cost += len(token_ids)
+                    sequence_log_prob += sum(
+                        log_probs, torch.tensor(0.0, device=self.model.device)
+                    )
+                    recorder.record_action(
+                        action_type="QUERY",
+                        worker_id=worker.worker_id,
+                        chunk_id=worker.worker_id,
+                        query_text=resp,
+                        token_ids=token_ids,
+                        log_probs=log_probs,
+                    )
+                budget_left -= len(workers)
+                description = "QUERY_ALL"
+            elif action == "VERIFY":
+                if self._detect_conflict(responses):
+                    responses = self._resolve_conflict(
+                        question, responses, chunks, workers, recorder=recorder
+                    )
+                    worker_calls += 3
+                    budget_left -= 3
+                    description = "VERIFY"
+                    if recorder.trajectory and recorder.trajectory[-1]["type"] == "conflict_resolution":
+                        entry = recorder.trajectory[-1]
+                        for swap_action in entry.get("swap_actions", []):
+                            sequence_log_prob += self._sum_action_log_probs(swap_action)
+                            total_token_cost += self._action_token_count(swap_action)
+                        sequence_log_prob += self._sum_action_log_probs(entry.get("arb_action"))
+                        total_token_cost += self._action_token_count(entry.get("arb_action"))
+                else:
+                    description = "VERIFY(no_conflict)"
+            elif action in ("ANSWER", "STOP"):
+                description = action
+            else:
+                description = "ANSWER(fallback)"
+
+            round_history.append({
+                "round": round_num,
+                "type": "agent_action",
+                "raw_output": raw_output,
+                "action": description,
+                "responses": list(responses),
+                "budget_left": budget_left,
+            })
+
+            if action in ("ANSWER", "STOP") or description.startswith("ANSWER"):
+                stop_reason = (
+                    "agent_ANSWER" if description.startswith("ANSWER") else f"agent_{action}"
+                )
+                break
+
+        # Synthesize final answer.
+        messages = self._build_synthesis_prompt(question, responses)
+        final_answer, answer_token_ids, answer_log_probs = generate_with_logprobs(
+            self.model,
+            self.tokenizer,
+            messages,
+            max_new_tokens=128,
+            do_sample=False,
+        )
+        total_token_cost += len(answer_token_ids)
+        sequence_log_prob += sum(
+            answer_log_probs,
+            torch.tensor(0.0, device=self.model.device),
+        )
+        if not stop_reason:
+            stop_reason = "max_rounds"
+
+        return {
+            "final_answer": final_answer.strip(),
+            "worker_responses": responses,
+            "worker_calls": worker_calls,
+            "total_token_cost": total_token_cost,
+            "sequence_log_prob": sequence_log_prob,
             "confidence": self._compute_confidence(responses),
             "rounds": round_history,
             "stop_reason": stop_reason,

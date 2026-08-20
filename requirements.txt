@@ -16,3 +16,4 @@ tqdm>=4.66.0
 scipy>=1.13.0
 modelscope>=1.18.0
 python-dotenv>=1.0.0
+peft>=0.10.0
